@@ -84,8 +84,6 @@ def draw_overlay(map_img, pred, target, observed, eval_mask, observed_mask, bad_
         draw.line(target_xy, fill=(255, 0, 255), width=2)
     if len(pred_xy) >= 2:
         draw.line(pred_xy, fill=(255, 215, 0), width=3)
-    if len(obs_xy) >= 1:
-        draw.line(obs_xy, fill=(64, 224, 208), width=3)
 
     for x, y in bad_xy:
         r = 3
@@ -100,7 +98,29 @@ def draw_overlay(map_img, pred, target, observed, eval_mask, observed_mask, bad_
 
     draw.rectangle((8, 8, min(w - 8, 8 + 8 * len(title)), 28), fill=(0, 0, 0))
     draw.text((12, 12), title, fill=(255, 255, 255))
+    draw_legend(draw, w)
     return np.asarray(canvas)
+
+
+def draw_legend(draw: ImageDraw.ImageDraw, w: int):
+    items = [
+        ("Pred", (255, 215, 0), "line"),
+        ("GT target", (255, 0, 255), "line"),
+        ("Start/End", (64, 224, 208), "dot"),
+        ("Collision/OOB", (255, 0, 0), "dot"),
+    ]
+    x0 = max(8, w - 150)
+    y0 = 8
+    row_h = 18
+    draw.rectangle((x0 - 6, y0 - 4, w - 8, y0 + row_h * len(items) + 4), fill=(0, 0, 0))
+    for i, (label, color, kind) in enumerate(items):
+        y = y0 + i * row_h + 8
+        if kind == "line":
+            draw.line((x0, y, x0 + 24, y), fill=color, width=3)
+        else:
+            r = 4
+            draw.ellipse((x0 + 8 - r, y - r, x0 + 8 + r, y + r), fill=color)
+        draw.text((x0 + 32, y - 6), label, fill=(255, 255, 255))
 
 
 @torch.no_grad()
