@@ -1,0 +1,3 @@
+*.pdf
+*.local.sh
+sbatch_simulation_two_end_alvis.sh
