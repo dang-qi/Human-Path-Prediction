@@ -70,6 +70,26 @@ By default, the script reads simulation data from:
 
 Override with `--csdi-root` or `--data-root` if needed.
 
+## Collision Evaluation
+
+After training, evaluate a checkpoint on the simulation split and compute the CSDI collision metrics:
+
+```bash
+python ynet/evaluate_simulation_two_end.py \
+  --csdi-root /path/to/CSDI_new \
+  --data-root /path/to/CSDI_new/data/simulation_data \
+  --checkpoint ./save/simulation_two_end_ynet/model_best.pt \
+  --split test \
+  --device cuda:0 \
+  --batch-size 32 \
+  --num-workers 8 \
+  --output-dir ./save/simulation_two_end_ynet \
+  --save-outputs
+```
+
+The evaluator uses `mode="normalized"` and `coord_range="zero_one"` because this baseline consumes and emits
+normalized `[0, 1]` coordinates from the CSDI simulation dataloader.
+
 ## Alvis SLURM Run
 
 Copy the public-safe template to a local script and fill in your own project ID and cluster paths:
