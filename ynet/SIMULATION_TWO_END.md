@@ -52,6 +52,29 @@ conda run -n lab1 python ynet/train_simulation_two_end.py \
   --output-dir ./save/simulation_two_end_ynet
 ```
 
+By default, training runs final test-set collision evaluation after the last epoch using `model_best.pt`, and saves
+random visualizations to:
+
+```text
+$OUTPUT_DIR/test_viz
+```
+
+The final evaluation writes:
+
+```text
+$OUTPUT_DIR/result_test_nsample1_normalized.csv
+$OUTPUT_DIR/summary_test_nsample1_normalized.json
+```
+
+Useful final-evaluation controls:
+
+```text
+--skip-final-eval       Do not run final collision evaluation.
+--skip-final-viz        Run final metrics but skip visualization.
+--final-viz-num 40      Number of random visualization PNGs.
+--save-final-outputs    Also save generated_outputs_test_nsample1_normalized.pk.
+```
+
 Useful options:
 
 ```text

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -347,7 +348,79 @@ def parse_args():
     parser.add_argument("--valid-every", type=int, default=1)
     parser.add_argument("--max-train-batches", type=int, default=0)
     parser.add_argument("--max-valid-batches", type=int, default=0)
+    parser.add_argument("--skip-final-eval", action="store_true")
+    parser.add_argument("--final-eval-split", default="test", choices=["valid", "test"])
+    parser.add_argument("--final-viz-num", type=int, default=40)
+    parser.add_argument("--skip-final-viz", action="store_true")
+    parser.add_argument("--save-final-outputs", action="store_true")
     return parser.parse_args()
+
+
+def run_final_artifacts(args, checkpoint: Path, out_dir: Path):
+    common = [
+        "--csdi-root",
+        args.csdi_root,
+        "--checkpoint",
+        str(checkpoint),
+        "--split",
+        args.final_eval_split,
+        "--device",
+        args.device,
+        "--seed",
+        str(args.seed),
+        "--data-length",
+        str(args.data_length),
+        "--batch-size",
+        str(args.batch_size),
+        "--num-workers",
+        str(args.num_workers),
+        "--num-keypoints",
+        str(args.num_keypoints),
+        "--waypoint-channels",
+        args.waypoint_channels,
+        "--sigma-pixels",
+        str(args.sigma_pixels),
+        "--temperature",
+        str(args.temperature),
+        "--map-downsample",
+        str(args.map_downsample),
+        "--division-factor",
+        str(args.division_factor),
+        "--scen-map-variant",
+        args.scen_map_variant,
+        "--poi-radius",
+        str(args.poi_radius),
+        "--scenarios",
+        args.scenarios,
+    ]
+    if args.data_root is not None:
+        common.extend(["--data-root", args.data_root])
+
+    eval_cmd = [
+        sys.executable,
+        str(ROOT / "evaluate_simulation_two_end.py"),
+        *common,
+        "--output-dir",
+        str(out_dir),
+    ]
+    if args.save_final_outputs:
+        eval_cmd.append("--save-outputs")
+    print("Running final collision evaluation:", " ".join(eval_cmd), flush=True)
+    subprocess.run(eval_cmd, check=True)
+
+    if not args.skip_final_viz and args.final_viz_num > 0:
+        viz_dir = out_dir / f"{args.final_eval_split}_viz"
+        viz_cmd = [
+            sys.executable,
+            str(ROOT / "visualize_simulation_two_end.py"),
+            *common,
+            "--output-dir",
+            str(viz_dir),
+            "--num",
+            str(args.final_viz_num),
+        ]
+        print("Running final visualization:", " ".join(viz_cmd), flush=True)
+        subprocess.run(viz_cmd, check=True)
 
 
 def main():
@@ -390,6 +463,11 @@ def main():
 
     torch.save(model.state_dict(), out_dir / "model_last.pt")
     save_json(out_dir / "summary.json", {"best_valid_RMSE": best_rmse, "history": history[-5:]})
+    if not args.skip_final_eval:
+        checkpoint = out_dir / "model_best.pt"
+        if not checkpoint.exists():
+            checkpoint = out_dir / "model_last.pt"
+        run_final_artifacts(args, checkpoint, out_dir)
 
 
 if __name__ == "__main__":
