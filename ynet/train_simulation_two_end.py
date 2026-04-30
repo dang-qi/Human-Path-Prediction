@@ -216,7 +216,7 @@ def interpolate_key_coords(key_coords: torch.Tensor, key_idx: torch.Tensor, leng
 
 
 def decode_logits(model: YNetTorch, logits: torch.Tensor, valid_h: int, valid_w: int) -> torch.Tensor:
-    logits = logits[..., :valid_h, :valid_w]
+    logits = logits[..., :valid_h, :valid_w].contiguous()
     coords_px = model.softargmax(logits)
     denom = coords_px.new_tensor([max(valid_w - 1, 1), max(valid_h - 1, 1)]).view(1, 1, 2)
     return (coords_px / denom).clamp(0.0, 1.0)
