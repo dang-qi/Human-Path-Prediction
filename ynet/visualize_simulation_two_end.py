@@ -235,6 +235,7 @@ def draw_overlay(
     obs_xy = normalized_to_pixels(observed_np[obs_np], h, w)
     bad_xy = normalized_to_pixels(pred_np[bad_points], h, w)
     jump_xy = normalized_to_pixels(pred_np[jump_mask], h, w) if jump_mask is not None else []
+    jump_indices = np.where(jump_mask)[0].tolist() if jump_mask is not None else []
 
     if len(target_xy) >= 2:
         draw.line(target_xy, fill=(255, 0, 255), width=2)
@@ -251,9 +252,18 @@ def draw_overlay(
     for x, y in bad_xy:
         r = 3
         draw.ellipse((x - r, y - r, x + r, y + r), fill=(255, 0, 0))
-    for x, y in jump_xy:
+    for point_idx, (x, y) in zip(jump_indices, jump_xy):
         r = 5
         draw.rectangle((x - r, y - r, x + r, y + r), outline=(255, 255, 255), width=2)
+        label = f"t={point_idx}"
+        if key_idx is not None:
+            key_np = key_idx.detach().cpu().numpy().astype(np.int64)
+            nearest = int(np.argmin(np.abs(key_np - int(point_idx))))
+            label = f"k={nearest} t={point_idx}"
+        tx = min(max(x + 7, 0), max(w - 64, 0))
+        ty = min(max(y - 14, 0), max(h - 16, 0))
+        draw.rectangle((tx - 2, ty - 2, tx + 7 * len(label) + 2, ty + 12), fill=(0, 0, 0))
+        draw.text((tx, ty), label, fill=(255, 255, 255))
     for x, y in obs_xy:
         r = 5
         draw.ellipse((x - r, y - r, x + r, y + r), fill=(64, 224, 208))
