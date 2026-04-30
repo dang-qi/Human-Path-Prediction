@@ -137,6 +137,27 @@ def choose_heatmap_channels(ex: dict, args) -> list[int]:
     return sorted(ch for ch in selected if 0 <= ch < len(ex["key_idx"]))
 
 
+def compute_jump_mask(pred: torch.Tensor, eval_mask: torch.Tensor, observed_mask: torch.Tensor, topk: int = 4) -> np.ndarray:
+    active = (eval_mask | observed_mask).bool()
+    out = np.zeros(int(pred.shape[0]), dtype=bool)
+    if int(active.sum().item()) < 3:
+        return out
+    active_idx = torch.where(active)[0]
+    pts = pred[active_idx]
+    step = torch.linalg.norm(pts[1:] - pts[:-1], dim=-1)
+    if step.numel() == 0:
+        return out
+    count = min(int(topk), int(step.numel()))
+    threshold = max(float(torch.quantile(step, 0.95).item()), float(step.mean().item() + 2.0 * step.std().item()))
+    chosen = torch.where(step >= threshold)[0]
+    if chosen.numel() == 0:
+        chosen = torch.topk(step, k=count).indices
+    for j in chosen[:count].tolist():
+        out[int(active_idx[j].item())] = True
+        out[int(active_idx[j + 1].item())] = True
+    return out
+
+
 def draw_heatmap_panel(ex: dict, args, title: str) -> np.ndarray:
     channels = choose_heatmap_channels(ex, args)
     if not channels:
@@ -185,7 +206,19 @@ def draw_heatmap_panel(ex: dict, args, title: str) -> np.ndarray:
     return np.asarray(sheet)
 
 
-def draw_overlay(map_img, pred, target, observed, eval_mask, observed_mask, bad_points, title: str):
+def draw_overlay(
+    map_img,
+    pred,
+    target,
+    observed,
+    eval_mask,
+    observed_mask,
+    bad_points,
+    title: str,
+    key_idx: torch.Tensor | None = None,
+    key_coords: torch.Tensor | None = None,
+    jump_mask: np.ndarray | None = None,
+):
     rgb = map_to_rgb(map_img)
     h, w = rgb.shape[:2]
     canvas = Image.fromarray(rgb, mode="RGB")
@@ -201,15 +234,26 @@ def draw_overlay(map_img, pred, target, observed, eval_mask, observed_mask, bad_
     target_xy = normalized_to_pixels(target_np[eval_np], h, w)
     obs_xy = normalized_to_pixels(observed_np[obs_np], h, w)
     bad_xy = normalized_to_pixels(pred_np[bad_points], h, w)
+    jump_xy = normalized_to_pixels(pred_np[jump_mask], h, w) if jump_mask is not None else []
 
     if len(target_xy) >= 2:
         draw.line(target_xy, fill=(255, 0, 255), width=2)
     if len(pred_xy) >= 2:
         draw.line(pred_xy, fill=(255, 215, 0), width=3)
 
+    if key_idx is not None and key_coords is not None:
+        key_np = key_coords.detach().cpu().numpy()
+        key_xy = normalized_to_pixels(key_np, h, w)
+        for x, y in key_xy:
+            r = 2
+            draw.ellipse((x - r, y - r, x + r, y + r), outline=(255, 255, 0), width=1)
+
     for x, y in bad_xy:
         r = 3
         draw.ellipse((x - r, y - r, x + r, y + r), fill=(255, 0, 0))
+    for x, y in jump_xy:
+        r = 5
+        draw.rectangle((x - r, y - r, x + r, y + r), outline=(255, 255, 255), width=2)
     for x, y in obs_xy:
         r = 5
         draw.ellipse((x - r, y - r, x + r, y + r), fill=(64, 224, 208))
@@ -230,6 +274,7 @@ def draw_legend(draw: ImageDraw.ImageDraw, w: int):
         ("GT target", (255, 0, 255), "line"),
         ("Start/End", (64, 224, 208), "dot"),
         ("Collision/OOB", (255, 0, 0), "dot"),
+        ("Large jump", (255, 255, 255), "box"),
     ]
     x0 = max(8, w - 150)
     y0 = 8
@@ -239,6 +284,8 @@ def draw_legend(draw: ImageDraw.ImageDraw, w: int):
         y = y0 + i * row_h + 8
         if kind == "line":
             draw.line((x0, y, x0 + 24, y), fill=color, width=3)
+        elif kind == "box":
+            draw.rectangle((x0 + 4, y - 4, x0 + 12, y + 4), outline=color, width=2)
         else:
             r = 4
             draw.ellipse((x0 + 8 - r, y - r, x0 + 8 + r, y + r), fill=color)
@@ -293,6 +340,7 @@ def collect_examples(model, loader, args, device, wp_channels):
                 continue
 
             bad = compute_bad_points(full[i], eval_mask_time[i], scen[i])
+            jump = compute_jump_mask(full[i], eval_mask_time[i], obs_mask_time[i])
             ex = {
                 "map": map_source[i].detach().cpu().clone() if torch.is_tensor(map_source) else np.array(map_source[i]),
                 "pred": full[i].detach().cpu().clone(),
@@ -312,10 +360,12 @@ def collect_examples(model, loader, args, device, wp_channels):
                 "eval_mask": eval_mask_time[i].detach().cpu().clone(),
                 "observed_mask": obs_mask_time[i].detach().cpu().clone(),
                 "bad": bad,
+                "jump": jump,
                 "scenario_id": None if scenario_id is None else int(scenario_id[i]),
                 "global_index": global_index,
                 "bad_count": int(np.asarray(bad).sum()),
                 "eval_count": int(eval_mask_time[i].sum().item()),
+                "jump_count": int(np.asarray(jump).sum()),
             }
             if replace == len(examples):
                 examples.append(ex)
@@ -383,6 +433,9 @@ def main():
             ex["observed_mask"],
             ex["bad"],
             title,
+            key_idx=ex["key_idx"],
+            key_coords=ex["key_coords"],
+            jump_mask=ex["jump"],
         )
         name = f"{rank:02d}_sid{sid}_g{ex['global_index']:05d}_bad{ex['bad_count']:03d}.png"
         path = out_dir / name
@@ -394,6 +447,7 @@ def main():
                 "global_index": ex["global_index"],
                 "bad_count": ex["bad_count"],
                 "eval_count": ex["eval_count"],
+                "jump_count": ex["jump_count"],
             }
         )
         if args.save_heatmaps:
