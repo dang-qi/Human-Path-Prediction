@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image, ImageDraw
 from tqdm import tqdm
 
@@ -61,6 +62,121 @@ def compute_bad_points(pred_norm: torch.Tensor, eval_mask: torch.Tensor, scen_ch
     yi = torch.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0).long().clamp(0, h - 1)
     hit = collision_mask[yi, xi] & finite & (~oob)
     return (eval_mask.bool() & ((~finite) | oob | hit)).detach().cpu().numpy()
+
+
+def parse_int_list(value: str) -> set[int]:
+    if not value:
+        return set()
+    return {int(x.strip()) for x in value.split(",") if x.strip()}
+
+
+def heatmap_to_uint8(heat: torch.Tensor, out_h: int, out_w: int) -> np.ndarray:
+    heat = heat.detach().float().unsqueeze(0).unsqueeze(0)
+    heat = F.interpolate(heat, size=(out_h, out_w), mode="bilinear", align_corners=False).squeeze()
+    arr = heat.cpu().numpy()
+    lo, hi = np.percentile(arr, [1.0, 99.5])
+    if hi <= lo:
+        lo, hi = float(arr.min()), float(arr.max())
+    arr = (arr - lo) / max(hi - lo, 1e-8)
+    return np.clip(arr * 255.0, 0, 255).astype(np.uint8)
+
+
+def colorize_heatmap(gray: np.ndarray) -> np.ndarray:
+    x = gray.astype(np.float32) / 255.0
+    rgb = np.zeros((*gray.shape, 3), dtype=np.float32)
+    rgb[..., 0] = np.clip(2.0 * x - 0.2, 0.0, 1.0)
+    rgb[..., 1] = np.clip(2.0 - np.abs(4.0 * x - 2.0), 0.0, 1.0)
+    rgb[..., 2] = np.clip(1.3 - 2.0 * x, 0.0, 1.0)
+    return (rgb * 255.0).astype(np.uint8)
+
+
+def blend_heatmap(map_img, heat: torch.Tensor) -> Image.Image:
+    base = map_to_rgb(map_img)
+    h, w = base.shape[:2]
+    gray = heatmap_to_uint8(heat, h, w)
+    color = colorize_heatmap(gray)
+    alpha = (gray.astype(np.float32) / 255.0 * 0.75)[..., None]
+    blended = base.astype(np.float32) * (1.0 - alpha) + color.astype(np.float32) * alpha
+    return Image.fromarray(np.clip(blended, 0, 255).astype(np.uint8), mode="RGB")
+
+
+def draw_point(draw: ImageDraw.ImageDraw, coord_norm: torch.Tensor, h: int, w: int, color, shape: str):
+    xy = normalized_to_pixels(coord_norm.detach().cpu().numpy().reshape(1, 2), h, w)[0]
+    x, y = xy
+    r = 4
+    if shape == "square":
+        draw.rectangle((x - r, y - r, x + r, y + r), outline=color, width=2)
+    elif shape == "cross":
+        draw.line((x - r, y - r, x + r, y + r), fill=color, width=2)
+        draw.line((x - r, y + r, x + r, y - r), fill=color, width=2)
+    else:
+        draw.ellipse((x - r, y - r, x + r, y + r), outline=color, width=2)
+
+
+def choose_heatmap_channels(ex: dict, args) -> list[int]:
+    explicit = parse_int_list(args.heatmap_channels)
+    if explicit:
+        return sorted(ch for ch in explicit if 0 <= ch < len(ex["key_idx"]))
+
+    selected = {0, len(ex["key_idx"]) - 1, *ex["wp_channels"]}
+    err = torch.linalg.norm(ex["key_coords"] - ex["gt_key"], dim=-1)
+    target_mask = ex["key_target"].bool()
+    err = torch.where(target_mask, err, torch.zeros_like(err))
+    topk = min(int(args.heatmap_topk), int(err.numel()))
+    if topk > 0:
+        for ch in torch.topk(err, k=topk).indices.tolist():
+            selected.add(int(ch))
+            if ch > 0:
+                selected.add(int(ch - 1))
+            if ch + 1 < len(ex["key_idx"]):
+                selected.add(int(ch + 1))
+    return sorted(ch for ch in selected if 0 <= ch < len(ex["key_idx"]))
+
+
+def draw_heatmap_panel(ex: dict, args, title: str) -> np.ndarray:
+    channels = choose_heatmap_channels(ex, args)
+    if not channels:
+        raise ValueError("No heatmap channels selected.")
+
+    panels = []
+    for ch in channels:
+        traj = torch.sigmoid(ex["traj_logits"][ch] / max(float(args.temperature), 1e-6))
+        canvas = blend_heatmap(ex["map"], traj)
+        draw = ImageDraw.Draw(canvas)
+        h, w = canvas.size[1], canvas.size[0]
+
+        draw_point(draw, ex["key_coords_raw"][ch], h, w, (255, 255, 0), "circle")
+        draw_point(draw, ex["key_coords"][ch], h, w, (255, 255, 255), "square")
+        draw_point(draw, ex["gt_key"][ch], h, w, (255, 0, 255), "cross")
+
+        label = f"traj k={ch} t={int(ex['key_idx'][ch])} target={int(ex['key_target'][ch].item())}"
+        draw.rectangle((6, 6, min(w - 6, 6 + 7 * len(label)), 24), fill=(0, 0, 0))
+        draw.text((10, 10), label, fill=(255, 255, 255))
+        panels.append(canvas)
+
+        if ch in ex["wp_channels"]:
+            wp = torch.sigmoid(ex["waypoint_logits"][ch] / max(float(args.temperature), 1e-6))
+            wp_canvas = blend_heatmap(ex["map"], wp)
+            wp_draw = ImageDraw.Draw(wp_canvas)
+            draw_point(wp_draw, ex["waypoint_coords"][ch], h, w, (255, 255, 0), "circle")
+            draw_point(wp_draw, ex["gt_key"][ch], h, w, (255, 0, 255), "cross")
+            wp_label = f"waypoint k={ch} t={int(ex['key_idx'][ch])}"
+            wp_draw.rectangle((6, 6, min(w - 6, 6 + 7 * len(wp_label)), 24), fill=(0, 0, 0))
+            wp_draw.text((10, 10), wp_label, fill=(255, 255, 255))
+            panels.append(wp_canvas)
+
+    base_w, base_h = panels[0].size
+    cols = max(1, int(args.heatmap_cols))
+    rows = int(np.ceil(len(panels) / cols))
+    sheet = Image.new("RGB", (base_w * cols, base_h * rows + 28), (20, 20, 20))
+    draw = ImageDraw.Draw(sheet)
+    legend = f"{title}  yellow=raw softargmax white=used keypoint magenta=GT"
+    draw.text((10, 8), legend, fill=(255, 255, 255))
+    for n, panel in enumerate(panels):
+        x = (n % cols) * base_w
+        y = 28 + (n // cols) * base_h
+        sheet.paste(panel, (x, y))
+    return np.asarray(sheet)
 
 
 def draw_overlay(map_img, pred, target, observed, eval_mask, observed_mask, bad_points, title: str):
@@ -126,6 +242,7 @@ def draw_legend(draw: ImageDraw.ImageDraw, w: int):
 @torch.no_grad()
 def collect_examples(model, loader, args, device, wp_channels):
     rng = random.Random(args.seed)
+    only_indices = parse_int_list(args.only_indices)
     examples = []
     seen = 0
     global_index = 0
@@ -135,8 +252,12 @@ def collect_examples(model, loader, args, device, wp_channels):
         if args.max_batches and batch_no > args.max_batches:
             break
         proc = process_batch(batch, args, device)
-        _, traj_logits = forward_model(model, proc, wp_channels, teacher_forcing=False, temperature=args.temperature)
-        key_coords = decode_logits(model, traj_logits, proc["valid_h"], proc["valid_w"])
+        waypoint_logits, traj_logits = forward_model(
+            model, proc, wp_channels, teacher_forcing=False, temperature=args.temperature
+        )
+        waypoint_coords = decode_logits(model, waypoint_logits, proc["valid_h"], proc["valid_w"])
+        key_coords_raw = decode_logits(model, traj_logits, proc["valid_h"], proc["valid_w"])
+        key_coords = key_coords_raw.clone()
         key_cond = ~proc["key_target"].bool()
         gt_key = proc["coords"][:, proc["key_idx"]]
         key_coords[key_cond] = gt_key[key_cond]
@@ -150,14 +271,17 @@ def collect_examples(model, loader, args, device, wp_channels):
 
         bsz = int(full.shape[0])
         for i in range(bsz):
-            replace = None
-            if len(examples) < args.num:
-                replace = len(examples)
+            if only_indices:
+                replace = len(examples) if global_index in only_indices else None
             else:
-                j = rng.randint(0, seen)
-                if j < args.num:
-                    replace = j
-            seen += 1
+                replace = None
+                if len(examples) < args.num:
+                    replace = len(examples)
+                else:
+                    j = rng.randint(0, seen)
+                    if j < args.num:
+                        replace = j
+                seen += 1
             if replace is None:
                 global_index += 1
                 continue
@@ -168,6 +292,15 @@ def collect_examples(model, loader, args, device, wp_channels):
                 "pred": full[i].detach().cpu().clone(),
                 "target": proc["coords"][i].detach().cpu().clone(),
                 "observed": batch["observed_data"][i].detach().cpu().clone(),
+                "waypoint_logits": waypoint_logits[i].detach().cpu().clone(),
+                "traj_logits": traj_logits[i].detach().cpu().clone(),
+                "waypoint_coords": waypoint_coords[i].detach().cpu().clone(),
+                "key_coords_raw": key_coords_raw[i].detach().cpu().clone(),
+                "key_coords": key_coords[i].detach().cpu().clone(),
+                "gt_key": gt_key[i].detach().cpu().clone(),
+                "key_target": proc["key_target"][i].detach().cpu().clone(),
+                "key_idx": proc["key_idx"].detach().cpu().clone(),
+                "wp_channels": list(wp_channels),
                 "eval_mask": eval_mask_time[i].detach().cpu().clone(),
                 "observed_mask": obs_mask_time[i].detach().cpu().clone(),
                 "bad": bad,
@@ -181,6 +314,8 @@ def collect_examples(model, loader, args, device, wp_channels):
             else:
                 examples[replace] = ex
             global_index += 1
+            if only_indices and only_indices.issubset({int(e["global_index"]) for e in examples}):
+                return sorted(examples, key=lambda item: item["global_index"])
     return examples
 
 
@@ -207,6 +342,11 @@ def parse_args():
     parser.add_argument("--poi-radius", type=int, default=5)
     parser.add_argument("--scenarios", default="all")
     parser.add_argument("--max-batches", type=int, default=0)
+    parser.add_argument("--only-indices", default="", help="Comma-separated global_index values to visualize exactly.")
+    parser.add_argument("--save-heatmaps", action="store_true", help="Also save waypoint/traj heatmap diagnostic panels.")
+    parser.add_argument("--heatmap-channels", default="", help="Comma-separated keypoint channels to draw; default selects high-error channels.")
+    parser.add_argument("--heatmap-topk", type=int, default=6, help="Number of largest keypoint-error traj heatmaps to include.")
+    parser.add_argument("--heatmap-cols", type=int, default=2)
     return parser.parse_args()
 
 
@@ -248,6 +388,12 @@ def main():
                 "eval_count": ex["eval_count"],
             }
         )
+        if args.save_heatmaps:
+            heat = draw_heatmap_panel(ex, args, title)
+            heat_name = f"{rank:02d}_sid{sid}_g{ex['global_index']:05d}_heatmaps.png"
+            heat_path = out_dir / heat_name
+            Image.fromarray(heat, mode="RGB").save(heat_path)
+            manifest[-1]["heatmaps"] = str(heat_path)
 
     with (out_dir / "manifest.json").open("w") as f:
         json.dump(manifest, f, indent=2)
