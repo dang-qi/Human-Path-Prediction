@@ -100,6 +100,10 @@ def blend_heatmap(map_img, heat: torch.Tensor) -> Image.Image:
     return Image.fromarray(np.clip(blended, 0, 255).astype(np.uint8), mode="RGB")
 
 
+def crop_valid_heatmap(heat: torch.Tensor, ex: dict) -> torch.Tensor:
+    return heat[..., : int(ex["valid_h"]), : int(ex["valid_w"])]
+
+
 def draw_point(draw: ImageDraw.ImageDraw, coord_norm: torch.Tensor, h: int, w: int, color, shape: str):
     xy = normalized_to_pixels(coord_norm.detach().cpu().numpy().reshape(1, 2), h, w)[0]
     x, y = xy
@@ -140,7 +144,8 @@ def draw_heatmap_panel(ex: dict, args, title: str) -> np.ndarray:
 
     panels = []
     for ch in channels:
-        traj = torch.sigmoid(ex["traj_logits"][ch] / max(float(args.temperature), 1e-6))
+        traj_logits = crop_valid_heatmap(ex["traj_logits"][ch], ex)
+        traj = torch.sigmoid(traj_logits / max(float(args.temperature), 1e-6))
         canvas = blend_heatmap(ex["map"], traj)
         draw = ImageDraw.Draw(canvas)
         h, w = canvas.size[1], canvas.size[0]
@@ -155,7 +160,8 @@ def draw_heatmap_panel(ex: dict, args, title: str) -> np.ndarray:
         panels.append(canvas)
 
         if ch in ex["wp_channels"]:
-            wp = torch.sigmoid(ex["waypoint_logits"][ch] / max(float(args.temperature), 1e-6))
+            wp_logits = crop_valid_heatmap(ex["waypoint_logits"][ch], ex)
+            wp = torch.sigmoid(wp_logits / max(float(args.temperature), 1e-6))
             wp_canvas = blend_heatmap(ex["map"], wp)
             wp_draw = ImageDraw.Draw(wp_canvas)
             draw_point(wp_draw, ex["waypoint_coords"][ch], h, w, (255, 255, 0), "circle")
@@ -300,6 +306,8 @@ def collect_examples(model, loader, args, device, wp_channels):
                 "gt_key": gt_key[i].detach().cpu().clone(),
                 "key_target": proc["key_target"][i].detach().cpu().clone(),
                 "key_idx": proc["key_idx"].detach().cpu().clone(),
+                "valid_h": int(proc["valid_h"]),
+                "valid_w": int(proc["valid_w"]),
                 "wp_channels": list(wp_channels),
                 "eval_mask": eval_mask_time[i].detach().cpu().clone(),
                 "observed_mask": obs_mask_time[i].detach().cpu().clone(),
