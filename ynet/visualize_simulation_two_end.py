@@ -258,8 +258,14 @@ def draw_overlay(
         label = f"t={point_idx}"
         if key_idx is not None:
             key_np = key_idx.detach().cpu().numpy().astype(np.int64)
-            nearest = int(np.argmin(np.abs(key_np - int(point_idx))))
-            label = f"k={nearest} t={point_idx}"
+            exact = np.where(key_np == int(point_idx))[0]
+            if exact.size:
+                label = f"k={int(exact[0])} t={point_idx}"
+            else:
+                right = int(np.searchsorted(key_np, int(point_idx), side="right"))
+                left = max(0, right - 1)
+                right = min(len(key_np) - 1, right)
+                label = f"k{left}->{right} t={point_idx}"
         tx = min(max(x + 7, 0), max(w - 64, 0))
         ty = min(max(y - 14, 0), max(h - 16, 0))
         draw.rectangle((tx - 2, ty - 2, tx + 7 * len(label) + 2, ty + 12), fill=(0, 0, 0))
