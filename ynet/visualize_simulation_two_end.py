@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import random
 import sys
@@ -204,6 +205,50 @@ def draw_heatmap_panel(ex: dict, args, title: str) -> np.ndarray:
         y = 28 + (n // cols) * base_h
         sheet.paste(panel, (x, y))
     return np.asarray(sheet)
+
+
+def write_keypoint_csv(path: Path, ex: dict):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    key_idx = ex["key_idx"].detach().cpu().numpy().astype(np.int64)
+    pred = ex["key_coords"].detach().cpu().numpy()
+    pred_raw = ex["key_coords_raw"].detach().cpu().numpy()
+    gt = ex["gt_key"].detach().cpu().numpy()
+    target = ex["key_target"].detach().cpu().numpy().astype(bool)
+    err = np.linalg.norm(pred - gt, axis=-1)
+    with path.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "k",
+                "t",
+                "target",
+                "pred_x",
+                "pred_y",
+                "raw_x",
+                "raw_y",
+                "gt_x",
+                "gt_y",
+                "err",
+                "near_edge",
+            ]
+        )
+        for k, t in enumerate(key_idx.tolist()):
+            near_edge = bool(np.any(pred[k] <= 0.01) or np.any(pred[k] >= 0.99))
+            writer.writerow(
+                [
+                    k,
+                    int(t),
+                    int(target[k]),
+                    float(pred[k, 0]),
+                    float(pred[k, 1]),
+                    float(pred_raw[k, 0]),
+                    float(pred_raw[k, 1]),
+                    float(gt[k, 0]),
+                    float(gt[k, 1]),
+                    float(err[k]),
+                    int(near_edge),
+                ]
+            )
 
 
 def draw_overlay(
@@ -443,6 +488,7 @@ def parse_args():
     parser.add_argument("--heatmap-channels", default="", help="Comma-separated keypoint channels to draw; default selects high-error channels.")
     parser.add_argument("--heatmap-topk", type=int, default=6, help="Number of largest keypoint-error traj heatmaps to include.")
     parser.add_argument("--heatmap-cols", type=int, default=2)
+    parser.add_argument("--save-keypoint-csv", action="store_true", help="Save per-keypoint decoded coordinates and errors.")
     return parser.parse_args()
 
 
@@ -494,6 +540,11 @@ def main():
             heat_path = out_dir / heat_name
             Image.fromarray(heat, mode="RGB").save(heat_path)
             manifest[-1]["heatmaps"] = str(heat_path)
+        if args.save_keypoint_csv:
+            csv_name = f"{rank:02d}_sid{sid}_g{ex['global_index']:05d}_keypoints.csv"
+            csv_path = out_dir / csv_name
+            write_keypoint_csv(csv_path, ex)
+            manifest[-1]["keypoints_csv"] = str(csv_path)
 
     with (out_dir / "manifest.json").open("w") as f:
         json.dump(manifest, f, indent=2)
