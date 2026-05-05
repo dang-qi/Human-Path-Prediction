@@ -249,6 +249,28 @@ def draw_overlay(
             r = 2
             draw.ellipse((x - r, y - r, x + r, y + r), outline=(255, 255, 0), width=1)
 
+    jump_key_labels = {}
+    if jump_indices and key_idx is not None and key_coords is not None:
+        key_times = key_idx.detach().cpu().numpy().astype(np.int64)
+        for point_idx in jump_indices:
+            right = int(np.searchsorted(key_times, int(point_idx), side="right"))
+            left = max(0, right - 1)
+            right = min(len(key_times) - 1, right)
+            jump_key_labels[left] = f"K{left}"
+            jump_key_labels[right] = f"K{right}"
+
+    if jump_key_labels and key_coords is not None:
+        key_np = key_coords.detach().cpu().numpy()
+        key_xy = normalized_to_pixels(key_np, h, w)
+        for k, label in jump_key_labels.items():
+            x, y = key_xy[k]
+            r = 6
+            draw.ellipse((x - r, y - r, x + r, y + r), outline=(255, 255, 255), width=2)
+            tx = min(max(x + 8, 0), max(w - 40, 0))
+            ty = min(max(y + 4, 0), max(h - 16, 0))
+            draw.rectangle((tx - 2, ty - 2, tx + 7 * len(label) + 2, ty + 12), fill=(0, 0, 0))
+            draw.text((tx, ty), label, fill=(255, 255, 255))
+
     for x, y in bad_xy:
         r = 3
         draw.ellipse((x - r, y - r, x + r, y + r), fill=(255, 0, 0))
