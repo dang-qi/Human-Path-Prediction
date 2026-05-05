@@ -214,6 +214,8 @@ def write_keypoint_csv(path: Path, ex: dict):
     pred_raw = ex["key_coords_raw"].detach().cpu().numpy()
     gt = ex["gt_key"].detach().cpu().numpy()
     target = ex["key_target"].detach().cpu().numpy().astype(bool)
+    cond = ex["key_cond"].detach().cpu().numpy().astype(bool)
+    valid = ex["key_valid"].detach().cpu().numpy().astype(bool)
     err = np.linalg.norm(pred - gt, axis=-1)
     with path.open("w", newline="") as f:
         writer = csv.writer(f)
@@ -222,6 +224,8 @@ def write_keypoint_csv(path: Path, ex: dict):
                 "k",
                 "t",
                 "target",
+                "cond",
+                "valid",
                 "pred_x",
                 "pred_y",
                 "raw_x",
@@ -239,6 +243,8 @@ def write_keypoint_csv(path: Path, ex: dict):
                     k,
                     int(t),
                     int(target[k]),
+                    int(cond[k]),
+                    int(valid[k]),
                     float(pred[k, 0]),
                     float(pred[k, 1]),
                     float(pred_raw[k, 0]),
@@ -394,7 +400,7 @@ def collect_examples(model, loader, args, device, wp_channels):
         waypoint_coords = decode_logits(model, waypoint_logits, proc["valid_h"], proc["valid_w"])
         key_coords_raw = decode_logits(model, traj_logits, proc["valid_h"], proc["valid_w"])
         key_coords = key_coords_raw.clone()
-        key_cond = ~proc["key_target"].bool()
+        key_cond = proc["key_cond"].bool()
         gt_key = proc["coords"][:, proc["key_idx"]]
         key_coords[key_cond] = gt_key[key_cond]
         full = interpolate_key_coords(key_coords, proc["key_idx"], proc["coords"].shape[1])
@@ -436,6 +442,8 @@ def collect_examples(model, loader, args, device, wp_channels):
                 "key_coords": key_coords[i].detach().cpu().clone(),
                 "gt_key": gt_key[i].detach().cpu().clone(),
                 "key_target": proc["key_target"][i].detach().cpu().clone(),
+                "key_cond": proc["key_cond"][i].detach().cpu().clone(),
+                "key_valid": proc["key_valid"][i].detach().cpu().clone(),
                 "key_idx": proc["key_idx"].detach().cpu().clone(),
                 "valid_h": int(proc["valid_h"]),
                 "valid_w": int(proc["valid_w"]),

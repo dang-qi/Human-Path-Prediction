@@ -84,7 +84,7 @@ def evaluate_checkpoint(model, loader, args, device, wp_channels):
         _, traj_logits = forward_model(model, proc, wp_channels, teacher_forcing=False, temperature=args.temperature)
         key_coords = decode_logits(model, traj_logits, proc["valid_h"], proc["valid_w"])
 
-        key_cond = ~proc["key_target"].bool()
+        key_cond = proc["key_cond"].bool()
         gt_key = proc["coords"][:, proc["key_idx"]]
         key_coords[key_cond] = gt_key[key_cond]
         full = interpolate_key_coords(key_coords, proc["key_idx"], proc["coords"].shape[1])
